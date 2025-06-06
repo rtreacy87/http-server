@@ -33,7 +33,48 @@ Let's break this down:
 ## Step 1: Define Data Structures
 
 Create `include/http.h`:
-
+```
++---------------------------+
+|        http.h             |
++---------------------------+
+| #define MAX_HEADERS 50    |
+| #define MAX_HEADER_SIZE 256|
+| #define MAX_URI_SIZE 1024 |
+| #define MAX_METHOD_SIZE 16|
+| #define MAX_VERSION_SIZE 16|
++---------------------------+
+|                           |
+| struct http_request_t     |
+| +-------------------------+
+| | char method[]           |
+| | char uri[]              |
+| | char version[]          |
+| | char headers[][][]      |
+| | int header_count        |
+| | char* body              |
+| | size_t body_length      |
+| +-------------------------+
+|                           |
+| struct http_response_t    |
+| +-------------------------+
+| | int status_code         |
+| | char headers[][][]      |
+| | int header_count        |
+| | char* body              |
+| | size_t body_length      |
+| +-------------------------+
+|                           |
+| Function Declarations     |
+| +-------------------------+
+| | parse_http_request()    |
+| | init_http_request()     |
+| | free_http_request()     |
+| | init_http_response()    |
+| | free_http_response()    |
+| | send_http_response()    |
+| +-------------------------+
++---------------------------+
+```
 ```c
 #ifndef HTTP_H
 #define HTTP_H
