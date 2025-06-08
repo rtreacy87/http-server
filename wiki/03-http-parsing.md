@@ -802,6 +802,9 @@ Create `src/http_parser.c`:
 #include <unistd.h>
 #include "../include/http.h"
 
+```
+
+```c
 void init_http_request(http_request_t* request) {
     memset(request, 0, sizeof(http_request_t));
     request->body = NULL;
@@ -809,6 +812,33 @@ void init_http_request(http_request_t* request) {
     request->header_count = 0;
 }
 
+```
+The `init_http_request` function initializes an HTTP request structure by:
+1. Uses `memset` to zero out the entire structure, clearing all fields at once
+2. Explicitly sets the `body` pointer to NULL (ensuring it doesn't point to random memory)
+3. Sets counters like `body_length` and `header_count` to 0
+
+This ensures the request structure starts in a clean, predictable state before parsing begins, preventing potential bugs from uninitialized values and making it safe to use `free_http_request` later even if parsing fails.
+
+The function:
+
+1. Takes a pointer to an existing `http_request_t` structure
+2. Uses `memset` to zero out all bytes in the structure (setting all fields to 0/NULL)
+3. Explicitly sets critical fields to known safe values:
+   - `request->body = NULL` ensures the pointer isn't pointing to random memory
+   - `request->body_length = 0` ensures we don't try to read from that NULL pointer
+   - `request->header_count = 0` ensures we don't try to access non-existent headers
+
+This prevents several potential issues:
+- Memory leaks (from overwriting a valid pointer without freeing it)
+- Segmentation faults (from dereferencing uninitialized pointers)
+- Buffer overflows (from using incorrect lengths)
+- Logic errors (from assuming headers exist when they don't)
+
+It's a defensive programming practice that creates a clean slate before parsing begins.
+
+
+```c
 void free_http_request(http_request_t* request) {
     if (request->body) {
         free(request->body);
@@ -816,6 +846,35 @@ void free_http_request(http_request_t* request) {
     }
 }
 
+```
+The `free_http_request` function is cleaning up any dynamically allocated memory:
+
+What it's doing:
+
+1. The conditional `if (request->body)` checks if the body pointer is non-NULL, meaning it points to allocated memory
+2. If there is allocated memory, `free(request->body)` releases that memory back to the system
+3. Setting `request->body = NULL` after freeing prevents a "dangling pointer" situation
+
+It's not setting up space - it's doing the opposite. It's cleaning up memory that was previously allocated (likely during parsing when the HTTP body was stored).
+
+Setting the pointer to NULL after freeing is a safety practice that:
+1. Prevents accidental use of the freed memory (would cause a crash instead of unpredictable behavior)
+2. Makes it possible to safely call `free_http_request()` multiple times on the same structure
+3. Makes it clear the pointer is no longer valid
+
+This function is typically called when you're done with the request to prevent memory leaks.
+
+The `free_http_request` function is called after you're done processing the request to:
+
+1. Release the memory that was dynamically allocated for the request body
+2. Prevent memory leaks by ensuring all allocated memory is properly freed
+3. Set the pointer to NULL to avoid any accidental use of the freed memory
+
+This is part of proper resource management in C - any memory you allocate with `malloc` (or related functions) must be explicitly freed when you're done with it. The HTTP body is typically the only part of the request structure that uses dynamically allocated memory, which is why it's the only part that needs explicit freeing.
+
+
+
+```c
 void init_http_response(http_response_t* response) {
     memset(response, 0, sizeof(http_response_t));
     response->body = NULL;
@@ -824,6 +883,20 @@ void init_http_response(http_response_t* response) {
     response->status_code = 200;
 }
 
+```
+The `init_http_response` function:
+
+1. Zeros out all memory for the response structure with `memset`
+2. Explicitly sets `body` to NULL to ensure it doesn't point to random memory
+3. Sets `body_length` and `header_count` to 0 to prevent accessing invalid memory
+4. Sets `status_code` to 200 (HTTP "OK") as a default value
+
+The 200 status code is indeed the standard HTTP status for "OK" - setting it as the default means that unless the code explicitly changes it, the response will indicate success. This is a sensible default since most responses in a typical web server are successful responses.
+
+This initialization creates a clean, safe starting point before the server code populates the response with actual content.
+
+
+```c
 void free_http_response(http_response_t* response) {
     if (response->body) {
         free(response->body);
@@ -831,33 +904,36 @@ void free_http_response(http_response_t* response) {
     }
 }
 
+```
+The `free_http_response` function:
+
+Is functionally identical to `free_http_request` - it:
+
+1. Checks if the body pointer is non-NULL
+2. Frees the dynamically allocated memory if it exists
+3. Sets the pointer to NULL to prevent dangling pointer issues
+
+The only difference is that it operates on an `http_response_t` structure instead of an `http_request_t` structure.
+
+Having separate functions with distinct names (rather than one generic function) makes the code more readable and self-documenting. When you see `free_http_response(&response)` in the code, it's immediately clear what's happening without having to check parameter types.
+
+
+```c
 int parse_http_request(const char* raw_request, http_request_t* request) {
     init_http_request(request);
     
     // Find the end of headers (double CRLF)
-    const char* header_end = strstr(raw_request, "\r\n\r\n");
-    if (!header_end) {
-        header_end = strstr(raw_request, "\n\n");
-        if (!header_end) {
-            return -1; // Malformed request
-        }
-    }
-    
+    const char* header_end = find_header_end(raw_request);
+    if (!header_end) return -1;
+ 
     // Parse request line
-    char* line_end = strchr(raw_request, '\n');
+    char* line_end = find_request_line_end(raw_request);
     if (!line_end) return -1;
     
     // Copy request line for parsing
-    size_t line_length = line_end - raw_request;
-    char request_line[line_length + 1];
-    strncpy(request_line, raw_request, line_length);
-    request_line[line_length] = '\0';
-    
-    // Remove \r if present
-    if (request_line[line_length - 1] == '\r') {
-        request_line[line_length - 1] = '\0';
-    }
-    
+    char* request_line = copy_line(raw_request, line_end);
+    if (!request_line) return -1;  // Memory allocation failed
+
     // Parse method, URI, version
     char* token = strtok(request_line, " ");
     if (!token) return -1;
@@ -880,28 +956,23 @@ int parse_http_request(const char* raw_request, http_request_t* request) {
         line_length = line_end - current;
         if (line_length <= 1) break; // Empty line
         
-        char header_line[line_length + 1];
-        strncpy(header_line, current, line_length);
-        header_line[line_length] = '\0';
+        char* header_line = copy_line(current, line_end);
+        if (!header_line) return -1;
         
-        // Remove \r if present
-        if (header_line[line_length - 1] == '\r') {
-            header_line[line_length - 1] = '\0';
-        }
+        int result = parse_header(header_line, request);
+        free(header_line);
         
-        // Parse header key: value
-        char* colon = strchr(header_line, ':');
-        if (colon) {
-            *colon = '\0';
-            char* key = header_line;
-            char* value = colon + 1;
-            
-            // Skip leading whitespace in value
-            while (*value == ' ' || *value == '\t') value++;
-            
-            strncpy(request->headers[request->header_count][0], key, MAX_HEADER_SIZE - 1);
-            strncpy(request->headers[request->header_count][1], value, MAX_HEADER_SIZE - 1);
-            request->header_count++;
+        if (result != 0) {
+           // Option 1: Strict - Fail the entire request
+           return -1;
+        
+           // Option 2: Lenient - Just continue to next header
+           // continue;
+           
+           // Option 3: Hybrid - Count errors
+           // request->error_count++;
+           // if (request->error_count > MAX_ALLOWED_ERRORS) return -1;
+              // Handle error or just continue to next header
         }
         
         current = line_end + 1;
@@ -910,6 +981,117 @@ int parse_http_request(const char* raw_request, http_request_t* request) {
     return 0; // Success
 }
 
+char* find_header_end(const char* raw_request) {
+    const char* header_end = strstr(raw_request, "\r\n\r\n");
+    if (!header_end) {
+        header_end = strstr(raw_request, "\n\n");
+    }
+    return (char*)header_end;
+}
+
+char* find_request_line_end(const char* raw_request) {
+    return strchr(raw_request, '\n');
+}
+
+char* copy_line(const char* start, const char* end) {
+    size_t length = end - start;
+    char* line = malloc(length + 1);
+    if (!line) return NULL;
+    
+    strncpy(line, start, length);
+    line[length] = '\0';
+    
+    // Remove \r if present
+    if (length > 0 && line[length - 1] == '\r') {
+        line[length - 1] = '\0';
+    }
+    
+    return line;
+}
+
+int parse_header(const char* header_line, http_request_t* request) {
+    // Check if we've reached the maximum number of headers
+    if (request->header_count >= MAX_HEADERS) {
+        return -1;
+    }
+    
+    // Parse header key: value
+    char* colon = strchr(header_line, ':');
+    if (!colon) {
+        return -1;  // Invalid header format
+    }
+    
+    // Split the header into key and value
+    *colon = '\0';  // Temporarily modify the string to split it
+    char* key = (char*)header_line;
+    char* value = colon + 1;
+    
+    // Skip leading whitespace in value
+    while (*value == ' ' || *value == '\t') value++;
+    
+    // Copy key and value to the request structure
+    strncpy(request->headers[request->header_count][0], key, MAX_HEADER_SIZE - 1);
+    strncpy(request->headers[request->header_count][1], value, MAX_HEADER_SIZE - 1);
+    request->header_count++;
+    
+    return 0;
+}
+```
+The line `char* token = strtok(request_line, " ");` is using the `strtok` function to split a string into tokens. Here's what it's doing:
+
+1. `strtok` is a C standard library function that breaks a string into a series of tokens based on a delimiter
+2. In this case, it's splitting `request_line` (which contains something like "GET /index.html HTTP/1.1") using space (" ") as the delimiter
+3. The first call to `strtok` returns a pointer to the first token ("GET")
+4. This pointer is stored in the `token` variable
+
+How `strtok` works:
+- It replaces the delimiter characters in the original string with null terminators (`\0`)
+- It keeps track of its position in the string internally (using static variables)
+- Subsequent calls with `NULL` as the first parameter continue tokenizing from where it left off
+
+For example, with the request line "GET /index.html HTTP/1.1":
+- First call: `strtok(request_line, " ")` returns "GET"
+- Second call: `strtok(NULL, " ")` returns "/index.html"
+- Third call: `strtok(NULL, " ")` returns "HTTP/1.1"
+- Fourth call: `strtok(NULL, " ")` returns NULL (no more tokens)
+
+This is how the HTTP request line is split into its three components: method, URI, and version.
+
+When you call `strtok(NULL, " ")`, you're telling the function:
+
+1. "Continue tokenizing the same string you were working on before"
+2. "Pick up where you left off last time"
+3. "Use the same delimiter (space in this case)"
+
+The `NULL` as the first parameter is a special signal to `strtok()` that you want to continue processing the previous string rather than starting on a new one. This works because `strtok()` maintains an internal static pointer to its current position in the string being tokenized.
+
+This is why the sequence works:
+```c
+char* token = strtok(request_line, " ");  // First token (method)
+token = strtok(NULL, " ");                // Second token (URI)
+token = strtok(NULL, " ");                // Third token (version)
+```
+
+Each call advances through the original string, returning the next token each time until there are no more tokens to extract.
+
+The line `strncpy(request->method, token, MAX_METHOD_SIZE - 1);` is copying the HTTP method from the token into the request structure with safety limits. Let's break it down:
+
+1. `strncpy()` is a C standard library function that copies a string with a maximum length limit
+   
+2. `request->method` is the destination - a fixed-size character array in the HTTP request structure where the method will be stored (like "GET", "POST", etc.)
+   
+3. `token` is the source - the pointer to the first token extracted from the request line
+   
+4. `MAX_METHOD_SIZE - 1` is the maximum number of characters to copy
+   - The `-1` is crucial - it leaves room for the null terminator
+   - If `MAX_METHOD_SIZE` is 16, this will copy at most 15 characters
+
+This approach prevents buffer overflow by ensuring we never write beyond the allocated space for the method field.
+
+The reason for using `MAX_METHOD_SIZE - 1` instead of just `MAX_METHOD_SIZE` is that `strncpy()` doesn't automatically add a null terminator if the source string is as long as or longer than the specified maximum. By leaving one character of space and manually adding a null terminator if needed, we ensure the string is always properly terminated.
+
+
+```c
 int send_http_response(int client_fd, http_response_t* response) {
     // Status line
     char status_line[256];
