@@ -1093,7 +1093,14 @@ The reason for using `MAX_METHOD_SIZE - 1` instead of just `MAX_METHOD_SIZE` is 
 
 ```c
 int send_http_response(int client_fd, http_response_t* response) {
-    // Status line
+    update_status_line(client_fd, response); 
+    add_headers(client_fd, response); 
+    write_body(client_fd, response);    
+    return 0;
+}
+
+void update_status_line(int client_fd, http_response_t* response) {
+    // Update status line based on response code
     char status_line[256];
     const char* status_text = "OK";
     if (response->status_code == 404) status_text = "Not Found";
@@ -1102,7 +1109,16 @@ int send_http_response(int client_fd, http_response_t* response) {
     snprintf(status_line, sizeof(status_line), "HTTP/1.1 %d %s\r\n", 
              response->status_code, status_text);
     write(client_fd, status_line, strlen(status_line));
-    
+}
+
+void add_headers(int client_fd, http_response_t* response){
+   update_headers(client_fd, response);
+   update_content_length(client_fd, response);
+   // End of headers
+   write(client_fd, "\r\n", 2);
+}
+
+void update_headers(int client_fd, http_response_t* response) {
     // Headers
     for (int i = 0; i < response->header_count; i++) {
         char header_line[512];
@@ -1110,7 +1126,9 @@ int send_http_response(int client_fd, http_response_t* response) {
                 response->headers[i][0], response->headers[i][1]);
         write(client_fd, header_line, strlen(header_line));
     }
-    
+}
+
+void update_content_length(int client_fd, http_response_t* response) {
     // Content-Length header if we have a body
     if (response->body && response->body_length > 0) {
         char content_length[64];
@@ -1118,20 +1136,176 @@ int send_http_response(int client_fd, http_response_t* response) {
                 response->body_length);
         write(client_fd, content_length, strlen(content_length));
     }
-    
-    // End of headers
-    write(client_fd, "\r\n", 2);
-    
+}
+
+void write_body(int client_fd, http_response_t* response) {
     // Body
     if (response->body && response->body_length > 0) {
         write(client_fd, response->body, response->body_length);
     }
-    
-    return 0;
 }
 ```
 
 ## Step 3: Update the Main Server
+
+Create `src/router.c`:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../include/http.h"
+
+typedef struct {
+    const char* path;
+    void (*handler)(http_request_t*, http_response_t*);
+} route_t;
+
+#define MAX_ROUTES 50
+route_t routes[MAX_ROUTES];
+int route_count = 0;
+
+void handle_home_page(http_response_t* response) {
+    response->status_code = 200;
+    response->body = strdup("<html><body><h1>Welcome to our HTTP Server!</h1></body></html>");
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "text/html");
+    response->header_count = 1;
+}
+
+void handle_hello_page(http_response_t* response) {
+    response->status_code = 200;
+    response->body = strdup("Hello, World!");
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "text/plain");
+    response->header_count = 1;
+}
+
+void handle_not_found(http_response_t* response) {
+    response->status_code = 404;
+    response->body = strdup("Page not found");
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "text/plain");
+    response->header_count = 1;
+}
+void register_route(const char* path, void (*handler)(http_response_t*)) {
+    if (route_count < MAX_ROUTES) {
+        routes[route_count].path = path;
+        routes[route_count].handler = handler;
+        route_count++;
+    }
+}
+
+void handle_route(http_request_t* request, http_response_t* response) {
+    // Try to find a matching route 
+    for (int i = 0; i < route_count; i++) {
+        if (strcmp(request->uri, routes[i].path) == 0) {
+            // Call the registered handler for this route
+            routes[i].handler(request, response);
+            return;
+        }
+    }
+    
+    // No route found, handle 404
+    handle_not_found(response);
+}
+
+
+```
+Looking at the `register_route` function in `src/router.c`:
+
+````c path=src/router.c mode=EXCERPT
+void register_route(const char* path, void (*handler)(http_request_t*, http_response_t*)) {
+    if (route_count < MAX_ROUTES) {
+        routes[route_count].path = path;
+        routes[route_count].handler = handler;
+        route_count++;
+    }
+}
+````
+
+Line-by-line explanation:
+
+1. `void register_route(const char* path, void (*handler)(http_request_t*, http_response_t*))`: 
+   - Function declaration that takes two parameters: a string path and a function pointer to a handler
+   - The handler function must accept two parameters: an HTTP request and response
+
+2. `if (route_count < MAX_ROUTES) {`: 
+   - Checks if there's still room in the routes array (defined as `MAX_ROUTES`, which is 50)
+
+3. `routes[route_count].path = path;`: 
+   - Stores the path string in the current route entry
+
+4. `routes[route_count].handler = handler;`: 
+   - Stores the handler function pointer in the current route entry
+
+5. `route_count++;`: 
+   - Increments the route counter to prepare for the next route registration
+
+High-level summary:
+The `register_route` function adds a new route to the HTTP server's routing table. It associates a URL path with a handler function that will be called when a request matches that path. The function prevents exceeding the maximum number of routes by checking against `MAX_ROUTES`. This implementation enables the server to dispatch incoming HTTP requests to the appropriate handler based on the requested URL path.
+
+Let me expand on that function declaration line:
+
+`void register_route(const char* path, void (*handler)(http_request_t*, http_response_t*))`
+
+Breaking it down in detail:
+
+1. `void` - The return type of the `register_route` function. It doesn't return any value.
+
+2. `register_route` - The name of the function.
+
+3. `const char* path` - The first parameter:
+   - `const char*` means it's a pointer to constant characters (a string)
+   - `const` indicates the function won't modify the string content
+   - `path` is the parameter name, representing the URL path to register
+
+4. `void (*handler)(http_request_t*, http_response_t*)` - The second parameter:
+   - This is a function pointer declaration
+   - `*handler` indicates it's a pointer to a function
+   - The parentheses around `*handler` are necessary for the correct syntax
+   - `void` before the parentheses indicates the pointed-to function returns nothing
+   - Inside the second set of parentheses are the parameters the pointed-to function accepts:
+     - `http_request_t*` - A pointer to an HTTP request structure
+     - `http_response_t*` - A pointer to an HTTP response structure
+
+In simpler terms, this function takes two things:
+1. A URL path string that you want to register
+2. A pointer to a handler function that will process requests to that URL
+
+The handler function itself must accept an HTTP request and response as parameters and doesn't return anything. This is the function that will be called when a client makes a request to the specified path.
+
+
+
+Create `include/router.h`:
+
+```c
+#ifndef ROUTER_H
+#define ROUTER_H
+
+#include "http.h"
+
+typedef struct {
+    const char* path;
+    void (*handler)(http_request_t*, http_response_t*);
+} route_t;
+
+#define MAX_ROUTES 50
+route_t routes[MAX_ROUTES];
+int route_count = 0;
+
+void register_route(const char* path, void (*handler)(http_request_t*, http_response_t*));
+void handle_route(http_request_t* request, http_response_t* response);
+
+void handle_home_page(http_request_t* request, http_response_t* response);
+void handle_hello_page(http_request_t* request, http_response_t* response);
+void handle_not_found(http_response_t* response);
+
+#endif
+```
 
 Update `src/server.c`:
 
@@ -1144,65 +1318,100 @@ Update `src/server.c`:
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include "../include/http.h"
+#include "../include/router.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 4096
 
+
 void handle_request(int client_fd, const char* raw_request) {
     http_request_t request;
     http_response_t response;
-    
     init_http_response(&response);
-    
     if (parse_http_request(raw_request, &request) == 0) {
-        printf("Method: %s\n", request.method);
-        printf("URI: %s\n", request.uri);
-        printf("Version: %s\n", request.version);
-        printf("Headers: %d\n", request.header_count);
-        
-        // Simple routing
-        if (strcmp(request.method, "GET") == 0) {
-            if (strcmp(request.uri, "/") == 0) {
-                response.status_code = 200;
-                response.body = strdup("<html><body><h1>Welcome to our HTTP Server!</h1></body></html>");
-                response.body_length = strlen(response.body);
-                strcpy(response.headers[0][0], "Content-Type");
-                strcpy(response.headers[0][1], "text/html");
-                response.header_count = 1;
-            } else if (strcmp(request.uri, "/hello") == 0) {
-                response.status_code = 200;
-                response.body = strdup("Hello, World!");
-                response.body_length = strlen(response.body);
-                strcpy(response.headers[0][0], "Content-Type");
-                strcpy(response.headers[0][1], "text/plain");
-                response.header_count = 1;
-            } else {
-                response.status_code = 404;
-                response.body = strdup("Page not found");
-                response.body_length = strlen(response.body);
-                strcpy(response.headers[0][0], "Content-Type");
-                strcpy(response.headers[0][1], "text/plain");
-                response.header_count = 1;
-            }
-        } else {
-            response.status_code = 405; // Method not allowed
-            response.body = strdup("Method not allowed");
-            response.body_length = strlen(response.body);
-        }
+        handle_good_request(&request, &response);
     } else {
-        response.status_code = 400; // Bad request
-        response.body = strdup("Bad request");
-        response.body_length = strlen(response.body);
+        handle_bad_request(&response);
     }
-    
     send_http_response(client_fd, &response);
-    
     free_http_request(&request);
     free_http_response(&response);
 }
 
+void setup_routes() {
+    register_route("/", handle_home_page);
+    register_route("/hello", handle_hello_page);
+}
+
+void handle_method_not_allowed(http_response_t* response) {
+    response->status_code = 405; // Method not allowed
+    response->body = strdup("Method not allowed");
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "text/plain");
+    response->header_count = 1;
+}
+
+void handle_bad_request(http_response_t* response) {
+    response->status_code = 400; // Bad request
+    response->body = strdup("Bad request");
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "text/plain");
+    response->header_count = 1;
+}
+
+void handle_good_request(http_request_t* request, http_response_t* response) {
+    printf("Method: %s\n", request->method);
+    printf("URI: %s\n", request->uri);
+    printf("Version: %s\n", request->version);
+    printf("Headers: %d\n", request->header_count);
+    
+    // Simple routing
+    if (strcmp(request->method, "GET") == 0) {
+        handle_route(request, response);       
+    } else {
+        handle_method_not_allowed(response);
+    }
+}
+
 int main() {
-    // ... (socket setup code same as before)
+    int server_fd, client_fd;
+    setup_routes();
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
+    
+    printf("Starting server on port %d...\n", PORT);
+    
+    // Step 1: Create socket
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("Socket creation failed");
+        exit(1);
+    }
+    
+    // Step 2: Configure server address
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+    
+    // Step 3: Bind socket to address
+    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(server_fd);
+        exit(1);
+    }
+    
+    // Step 4: Listen for connections
+    if (listen(server_fd, 5) < 0) {
+        perror("Listen failed");
+        close(server_fd);
+        exit(1);
+    }
+    
+    printf("Server listening on port %d\n", PORT);
     
     while (1) {
         printf("Waiting for connection...\n");
@@ -1232,6 +1441,196 @@ int main() {
     return 0;
 }
 ```
+
+
+# Dot Notation vs Pointer Notation in C
+
+## Basic Syntax Difference
+
+1. **Dot Notation**: `structure.member`
+   - Used with structure variables directly
+
+2. **Arrow Notation**: `pointer->member` 
+   - Used with pointers to structures
+   - Equivalent to `(*pointer).member`
+
+## When to Use Each
+
+### Use Dot Notation When:
+
+- You have an actual structure variable (not a pointer)
+- The structure is allocated on the stack
+- You're accessing the structure directly
+
+```c
+http_response_t response;  // Structure variable
+response.status_code = 200;  // Correct
+```
+
+### Use Arrow Notation When:
+
+- You have a pointer to a structure
+- The structure is passed as a parameter via pointer
+- The structure is dynamically allocated (on the heap)
+
+```c
+http_response_t* response_ptr;  // Pointer to structure
+response_ptr->status_code = 200;  // Correct
+// Equivalent to (*response_ptr).status_code = 200;
+```
+
+## Why Choose One Over the Other?
+
+### Reasons to Use Dot Notation:
+- **Direct Access**: When you have the actual structure, not a pointer
+- **Stack Allocation**: For small structures that don't need to be passed around
+- **Simplicity**: When you don't need to modify the original structure elsewhere
+
+### Reasons to Use Arrow Notation:
+- **Efficiency**: Passing large structures by pointer is more efficient than copying
+- **Modification**: When you need to modify the original structure
+- **Dynamic Allocation**: When structures are created at runtime with `malloc`
+- **Function Parameters**: When passing structures to functions (to avoid copying)
+
+## In Your HTTP Server Code
+
+In your HTTP server, you're consistently using pointer notation (`->`) because:
+
+1. You're passing structures between functions via pointers
+2. This allows functions to modify the original structures
+3. It's more efficient than copying potentially large HTTP request/response structures
+4. It maintains consistency across your codebase
+
+The errors occurred when you accidentally used dot notation with pointer parameters, which would cause compilation errors because the compiler expects pointer notation when working with pointer variables.
+
+# ASCII Diagrams: Dot vs Pointer Notation
+
+## Dot Notation Example
+
+```
+Stack Memory
++----------------------------+
+| http_response_t response   |
+| +------------------------+ |
+| | status_code: 200       | |
+| | body: "Hello World"    | |
+| | body_length: 11        | |
+| | headers: ...           | |
+| | header_count: 1        | |
+| +------------------------+ |
++----------------------------+
+
+Access: response.status_code = 200;
+```
+
+When you have the actual structure variable, use dot notation to access its members directly.
+
+## Pointer Notation Example
+
+```
+Stack Memory                  Heap Memory
++---------------------+       +------------------------+
+| http_response_t*    |       | http_response_t        |
+| response_ptr -------+------>| +--------------------+ |
+|                     |       | | status_code: 200   | |
++---------------------+       | | body: "Hello"      | |
+                              | | body_length: 5     | |
+                              | | headers: ...       | |
+                              | | header_count: 1    | |
+                              | +--------------------+ |
+                              +------------------------+
+
+Access: response_ptr->status_code = 200;
+```
+
+When you have a pointer to a structure, use arrow notation to access its members.
+
+## Function Parameter Example
+
+```
+void update_status(http_response_t* resp) {
+    resp->status_code = 404;  // Arrow notation for pointer
+}
+
+// Function call
+http_response_t my_response;
+update_status(&my_response);  // Pass address of structure
+
+Stack before call:            Stack during function:
++-------------------+         +-------------------+
+| my_response       |         | resp              |
+| status_code: 200  |         | (points to)-------+--+
++-------------------+         +-------------------+  |
+       ^                                             |
+       |                                             |
+       +---------------------------------------------+
+```
+
+When passing structures to functions, use pointers and arrow notation for efficiency.
+
+## Local Structure Example
+
+```
+void process_data() {
+    // Local structure on stack
+    http_response_t local_response;
+    
+    // Direct access with dot notation
+    local_response.status_code = 200;
+    local_response.body_length = 10;
+    
+    // Stack Memory
+    +------------------------+
+    | local_response         |
+    | status_code: 200       |
+    | body_length: 10        |
+    | ...                    |
+    +------------------------+
+}
+```
+
+For local structures that don't need to be shared, use dot notation for simplicity.
+
+
+### Use Dot Notation When:
+- You have a local structure variable that only exists within the function
+- The structure's lifetime is limited to the function's execution
+- You don't need to share modifications with code outside the function
+- The structure is relatively small and efficient to create on the stack
+
+Example:
+```c
+void process_data() {
+    http_response_t local_response;  // Local variable on stack
+    local_response.status_code = 200;  // Dot notation
+    // Use local_response within this function only
+}
+```
+
+### Use Pointer Notation When:
+- You need to modify a structure that was created outside the function
+- You want those modifications to be visible to the calling code
+- You're passing large structures (to avoid copying the entire structure)
+- You're working with dynamically allocated structures (from malloc/calloc)
+
+Example:
+```c
+void update_response(http_response_t* response) {
+    response->status_code = 200;  // Pointer notation
+    // Modifications will be visible to the calling code
+}
+
+// Usage
+http_response_t my_response;
+update_response(&my_response);  // Pass address to modify original
+```
+
+The key distinction is about scope and visibility of changes:
+- Dot notation for "local effects" (changes stay within the function)
+- Pointer notation for "external effects" (changes visible outside the function)
+
+This pattern is especially important in your HTTP server where you want functions like `handle_home_page()` to modify the same response structure that was created in the main request handler.
+
 
 ## Step 4: Update the Makefile
 

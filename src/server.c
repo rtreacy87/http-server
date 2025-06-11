@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,9 +6,76 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include "../include/http.h"
+#include "../include/router.h"
 
 #define PORT 8080
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 4096
+
+void handle_method_not_allowed(http_response_t* response) {
+    response->status_code = 405; // Method not allowed
+    response->body = strdup("Method not allowed");
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "text/plain");
+    response->header_count = 1;
+}
+
+void handle_bad_request(http_response_t* response) {
+    response->status_code = 400; // Bad request
+    response->body = strdup("Bad request");
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "text/plain");
+    response->header_count = 1;
+}
+
+void handle_good_request(http_request_t* request, http_response_t* response) {
+    printf("Method: %s\n", request->method);
+    printf("URI: %s\n", request->uri);
+    printf("Version: %s\n", request->version);
+    printf("Headers: %d\n", request->header_count);
+    
+    // Simple routing
+    if (strcmp(request->method, "GET") == 0) {
+        printf("Calling handle_route for GET request\n");
+        handle_route(request, response);
+        printf("Returned from handle_route\n");
+
+    } else {
+        handle_method_not_allowed(response);
+    }
+}
+
+void handle_request(int client_fd, const char* raw_request) {
+    http_request_t request;
+    http_response_t response;
+    init_http_response(&response);
+    if (parse_http_request(raw_request, &request) == 0) {
+        handle_good_request(&request, &response);
+    } else {
+        handle_bad_request(&response);
+    }
+    send_http_response(client_fd, &response);
+    free_http_request(&request);
+    free_http_response(&response);
+}
+
+void setup_routes() {
+    // Clear existing routes
+    route_count = 0;
+    
+    // Register routes
+    register_route("/", handle_home_page);
+    register_route("/hello", handle_hello_page);
+    
+    printf("Routes registered: %d\n", route_count);
+    for (int i = 0; i < route_count; i++) {
+        printf("  Route %d: %s\n", i, routes[i].path);
+    }
+}
+
+
 
 int main() {
     int server_fd, client_fd;
@@ -16,7 +84,8 @@ int main() {
     char buffer[BUFFER_SIZE];
     
     printf("Starting server on port %d...\n", PORT);
-    
+
+    printf("Raw request first 100 chars: %.100s\n", buffer);   
     // Step 1: Create socket
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -45,8 +114,7 @@ int main() {
     }
     
     printf("Server listening on port %d\n", PORT);
-    
-    // Step 5: Accept and handle connections
+    setup_routes();
     while (1) {
         printf("Waiting for connection...\n");
         
@@ -58,23 +126,19 @@ int main() {
         
         printf("Client connected from %s\n", inet_ntoa(client_addr.sin_addr));
         
-        // Read data from client
+        // Read HTTP request
         int bytes_read = read(client_fd, buffer, BUFFER_SIZE - 1);
         if (bytes_read > 0) {
             buffer[bytes_read] = '\0';
-            printf("Received: %s\n", buffer);
+            printf("Raw request:\n%s\n", buffer);
             
-            // Send response
-            const char* response = "Hello from server!\n";
-            write(client_fd, response, strlen(response));
+            handle_request(client_fd, buffer);
         }
         
-        // Close client connection
         close(client_fd);
         printf("Client disconnected\n");
     }
     
-    close(server_fd);
     return 0;
 }
 
