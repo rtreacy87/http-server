@@ -6,14 +6,15 @@
 
 typedef struct {
     const char* path;
-    void (*handler)(http_response_t*);
+    void (*handler)(http_request_t*, http_response_t*);
 } route_t;
 
 #define MAX_ROUTES 50
 route_t routes[MAX_ROUTES];
 int route_count = 0;
 
-void handle_home_page(http_response_t* response) {
+void handle_home_page(http_request_t* request, http_response_t* response) {
+    (void)request; // Unused parameter
     response->status_code = 200;
     response->body = strdup("<html><body><h1>Welcome to our HTTP Server!</h1></body></html>");
     response->body_length = strlen(response->body);
@@ -22,7 +23,8 @@ void handle_home_page(http_response_t* response) {
     response->header_count = 1;
 }
 
-void handle_hello_page(http_response_t* response) {
+void handle_hello_page(http_request_t* request, http_response_t* response) {
+    (void)request; // Unused parameter
     response->status_code = 200;
     response->body = strdup("Hello, World!");
     response->body_length = strlen(response->body);
@@ -31,7 +33,8 @@ void handle_hello_page(http_response_t* response) {
     response->header_count = 1;
 }
 
-void handle_not_found(http_response_t* response) {
+void handle_not_found(http_request_t* request, http_response_t* response) {
+    (void)request; // Unused parameter
     response->status_code = 404;
     response->body = strdup("Page not found");
     response->body_length = strlen(response->body);
@@ -40,7 +43,7 @@ void handle_not_found(http_response_t* response) {
     response->header_count = 1;
 }
 
-void register_route(const char* path, void (*handler)( http_response_t*)) {
+void register_route(const char* path, void (*handler)(http_request_t*, http_response_t*)) {
     if (route_count < MAX_ROUTES) {
         routes[route_count].path = path;
         routes[route_count].handler = handler;
@@ -53,13 +56,13 @@ void handle_route(http_request_t* request, http_response_t* response) {
     for (int i = 0; i < route_count; i++) {
         if (strcmp(request->uri, routes[i].path) == 0) {
             // Call the registered handler for this route
-            routes[i].handler( response);
+            routes[i].handler(request, response);
             return;
         }
     }
     
     // No route found, handle 404
-    handle_not_found(response);
+    handle_not_found(request, response);
 }
 
 

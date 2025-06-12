@@ -3,11 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include "../include/http.h"
 #include "../include/router.h"
+#include "../include/file_server.h"
 
 #define PORT 8080
 #define BUFFER_SIZE 4096
@@ -46,6 +48,25 @@ void handle_good_request(http_request_t* request, http_response_t* response) {
         handle_method_not_allowed(response);
     }
 }
+void handle_api_time_request(http_request_t* request, http_response_t* response) {
+    (void)request; // Unused parameter
+    
+    // Dynamic content example
+    time_t now = time(NULL);
+    char* time_str = ctime(&now);
+    time_str[strlen(time_str) - 1] = '\0'; // Remove newline
+    
+    char json_response[256];
+    snprintf(json_response, sizeof(json_response), 
+            "{\"current_time\": \"%s\"}", time_str);
+    
+    response->status_code = 200;
+    response->body = strdup(json_response);
+    response->body_length = strlen(response->body);
+    strcpy(response->headers[0][0], "Content-Type");
+    strcpy(response->headers[0][1], "application/json");
+    response->header_count = 1;
+}   
 
 void handle_request(int client_fd, const char* raw_request) {
     http_request_t request;
@@ -62,17 +83,16 @@ void handle_request(int client_fd, const char* raw_request) {
 }
 
 void setup_routes() {
-    // Clear existing routes
-    route_count = 0;
-    
     // Register routes
     register_route("/", handle_home_page);
     register_route("/hello", handle_hello_page);
-    
-    printf("Routes registered: %d\n", route_count);
-    for (int i = 0; i < route_count; i++) {
-        printf("  Route %d: %s\n", i, routes[i].path);
-    }
+    register_route("/api/time", handle_api_time_request);
+
+    register_route("/index.html", serve_static_file_handler);
+    register_route("/css/style.css", serve_static_file_handler);
+    register_route("/js/script.js", serve_static_file_handler);
+    register_route("/images/logo.png", serve_static_file_handler);
+
 }
 
 

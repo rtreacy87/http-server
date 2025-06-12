@@ -1712,6 +1712,55 @@ Headers: 3
 - Make sure the server is running
 - Check that you're using the correct port
 
+### "Address already in use"
+To clear out a port that's in use (like port 8080), you have several options:
+
+1. **Find and kill the process using the port**:
+
+```bash
+# Find the process using port 8080
+sudo lsof -i :8080
+# or
+sudo netstat -tulpn | grep 8080
+
+# Kill the process using its PID
+sudo kill -9 <PID>
+```
+
+2. **Kill all instances of your server program**:
+
+```bash
+# If your server is named "server"
+killall server
+# or
+pkill server
+```
+
+3. **Wait for the TIME_WAIT state to clear**:
+   - TCP connections in TIME_WAIT state typically last 30-120 seconds
+   - You can just wait for this period to pass
+
+4. **Use the SO_REUSEADDR socket option** (which we already added to your code):
+
+```c
+int opt = 1;
+setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+```
+
+5. **Change the port number** (temporary solution):
+
+```c
+#define PORT 8081  // Use a different port
+```
+
+The most thorough approach is to:
+1. Find what's using the port with `lsof` or `netstat`
+2. Kill that process if it's safe to do so
+3. Keep the `SO_REUSEADDR` option in your code to prevent future issues
+
+If you're developing and frequently restarting your server, the `SO_REUSEADDR` option is particularly helpful as it allows your server to bind to the port even if it's in TIME_WAIT state from a previous instance.
+
+
 ## Understanding the Code Flow
 
 1. **Client connects** → Server accepts connection
